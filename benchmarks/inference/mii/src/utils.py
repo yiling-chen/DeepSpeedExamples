@@ -161,6 +161,12 @@ def parse_args(
         help="Which backend to benchmark",
     )
     parser.add_argument(
+        "--input_image",
+        type=str,
+        default=None,
+        help="Path to an image to use as input for the model",
+    )
+    parser.add_argument(
         "--overwrite_results", action="store_true", help="Overwrite existing results"
     )
     parser.add_argument("--fp6", action="store_true", help="Enable FP6")
