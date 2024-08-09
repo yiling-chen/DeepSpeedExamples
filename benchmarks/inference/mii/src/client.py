@@ -5,6 +5,8 @@
 
 import argparse
 import asyncio
+import base64
+import io
 import json
 import multiprocessing
 import os
@@ -13,10 +15,12 @@ import random
 import requests
 import threading
 import time
+from PIL import Image
 from typing import List, Iterable, Union
 
 import numpy as np
 from transformers import AutoTokenizer
+from openai import OpenAI
 
 try:
     from .postprocess_results import ResponseDetails
@@ -193,6 +197,71 @@ def call_aml(
     )
 
 
+def call_openai(
+    input_tokens: str,
+    max_new_tokens: int,
+    args: argparse.Namespace,
+    start_time: Union[None, float] = None,
+) -> ResponseDetails:
+    if args.stream:
+        raise NotImplementedError("Not implemented for streaming")
+
+    openai_api_key = "EMPTY"
+    openai_api_base = args.aml_api_url
+
+    client = OpenAI(
+        api_key=openai_api_key,
+        base_url=openai_api_base,
+    )
+    models = client.models.list()
+    model = models.data[0].id
+
+    image = Image.open(args.input_image).convert("RGB")
+    img_bytes = io.BytesIO()
+    image.save(img_bytes, format="JPEG")
+    img_str = base64.b64encode(img_bytes.getvalue()).decode("utf-8")
+
+    token_gen_time = []
+    if start_time is None:
+        start_time = time.time()
+    while True:
+        try:
+            chat_response = client.chat.completions.create(
+                model=model,
+                temperature=0.0,
+                top_p=0.95,
+                max_tokens=max_new_tokens,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/jpeg;base64,{img_str}"}
+                            },
+                            {"type": "text", "text": input_tokens}
+                        ],
+                    }
+                ],
+            )
+            output = chat_response.choices[0].message.content
+            break
+        except Exception as e:
+            print(f"Connection failed with {e}. Retrying OpenAI request")
+            # make sure response exist before we call it
+            # if response:
+            #     print(f"{response.status_code}:{response.content}")
+
+    return ResponseDetails(
+        generated_tokens=output,
+        prompt=input_tokens,
+        start_time=start_time,
+        end_time=time.time(),
+        model_time=0,
+        token_gen_time=token_gen_time,
+    )
+
+
 def _run_parallel(
     barrier: Union[threading.Barrier, multiprocessing.Barrier],
     query_queue: Union[queue.Queue, multiprocessing.Queue],
@@ -205,7 +274,7 @@ def _run_parallel(
     event_loop = asyncio.new_event_loop()
     asyncio.set_event_loop(event_loop)
 
-    backend_call_fns = {"fastgen": call_fastgen, "vllm": call_vllm, "aml": call_aml}
+    backend_call_fns = {"fastgen": call_fastgen, "vllm": call_vllm, "aml": call_aml, "openai": call_openai}
     call_fn = backend_call_fns[args.backend]
 
     barrier.wait()
@@ -272,14 +341,16 @@ def run_client(args):
     for p in processes:
         p.start()
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model)
-    query_generator = RandomQueryGenerator(all_text, tokenizer, seed=42)
-    request_text = query_generator.get_random_request_text(
-        args.mean_prompt_length,
-        args.mean_prompt_length * args.prompt_length_var,
-        args.max_prompt_length,
-        args.num_requests + args.warmup * args.num_clients,
-    )
+    # tokenizer = AutoTokenizer.from_pretrained(args.model)
+    # query_generator = RandomQueryGenerator(all_text, tokenizer, seed=42)
+    # request_text = query_generator.get_random_request_text(
+    #     args.mean_prompt_length,
+    #     args.mean_prompt_length * args.prompt_length_var,
+    #     args.max_prompt_length,
+    #     args.num_requests + args.warmup * args.num_clients,
+    # )
+
+    request_text = [f"Write a 1000-word essay according to the text in the image." for _ in range(args.num_requests + args.warmup * args.num_clients)]
 
     for t in request_text:
         # Set max_new_tokens following normal distribution
@@ -289,6 +360,7 @@ def run_client(args):
                 args.max_new_tokens_var * args.mean_max_new_tokens,
             )
         )
+        # req_max_new_tokens = args.mean_max_new_tokens
         query_queue.put((t, req_max_new_tokens))
 
     # Tokenizers must be initialized after fork.
