@@ -149,12 +149,31 @@ def call_aml(
         "Authorization": ("Bearer " + args.aml_api_key),
         "azureml-model-deployment": args.deployment_name,
     }
+
+    image = Image.open(args.input_image).convert("RGB")
+    img_bytes = io.BytesIO()
+    image.save(img_bytes, format="JPEG")
+    img_str = base64.b64encode(img_bytes.getvalue()).decode("utf-8")
+
     pload = {
         "input_data": {
             "input_string": [
-                input_tokens,
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": input_tokens,
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{img_str}"}
+                        },
+                    ],
+                }
             ],
             "parameters": {
+                "temperature": 0.0,
                 "max_tokens": max_new_tokens,
                 "return_full_text": False,
             },
@@ -164,7 +183,7 @@ def call_aml(
     def get_response(response: requests.Response) -> List[str]:
         data = json.loads(response.content)
         try:
-            output = data[0]["0"]
+            output = data["output"]
         except (KeyError, TypeError):
             try:
                 output = data[0]
@@ -206,7 +225,8 @@ def call_openai(
     if args.stream:
         raise NotImplementedError("Not implemented for streaming")
 
-    openai_api_key = "EMPTY"
+    # openai_api_key = "EMPTY"
+    openai_api_key = args.aml_api_key
     openai_api_base = args.aml_api_url
 
     client = OpenAI(
@@ -229,7 +249,6 @@ def call_openai(
             chat_response = client.chat.completions.create(
                 model=model,
                 temperature=0.0,
-                top_p=0.95,
                 max_tokens=max_new_tokens,
                 messages=[
                     {
@@ -350,17 +369,17 @@ def run_client(args):
     #     args.num_requests + args.warmup * args.num_clients,
     # )
 
-    request_text = [f"Write a 1000-word essay according to the text in the image." for _ in range(args.num_requests + args.warmup * args.num_clients)]
+    request_text = [f"Write an essay of at least 600 words according to the text in the image." for _ in range(args.num_requests + args.warmup * args.num_clients)]
 
     for t in request_text:
         # Set max_new_tokens following normal distribution
-        req_max_new_tokens = int(
-            np.random.normal(
-                args.mean_max_new_tokens,
-                args.max_new_tokens_var * args.mean_max_new_tokens,
-            )
-        )
-        # req_max_new_tokens = args.mean_max_new_tokens
+        # req_max_new_tokens = int(
+        #     np.random.normal(
+        #         args.mean_max_new_tokens,
+        #         args.max_new_tokens_var * args.mean_max_new_tokens,
+        #     )
+        # )
+        req_max_new_tokens = args.mean_max_new_tokens
         query_queue.put((t, req_max_new_tokens))
 
     # Tokenizers must be initialized after fork.

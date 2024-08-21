@@ -13,7 +13,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
-from postprocess_results import read_json, get_summary, get_result_sets
+from postprocess_results import read_json, get_summary, get_result_sets, get_tokenizer
 
 
 def get_args():
@@ -35,13 +35,24 @@ def extract_values(file_pattern):
     clients = []
     throughputs = []
     latencies = []
-    extra_args = {}
+    num_tokens = []
     for f in files:
         prof_args, response_details = read_json(f)
         summary = get_summary(prof_args, response_details)
         clients.append(prof_args["num_clients"])
         throughputs.append(summary.throughput)
         latencies.append(summary.latency)
+        num_tokens.append(summary.average_tokens)
+
+    # Sort by the number of clients
+    clients, throughputs, latencies = zip(*sorted(zip(clients, throughputs, latencies)))
+
+    # Output markdown table
+    print(f"| {' | '.join(['# clients'] + [str(c) for c in clients])} |")
+    print(f"| {' | '.join(['---'] * (len(clients)+1))} |")
+    print(f"| {' | '.join(['Avg Tokens'] + [str(round(t, 3)) for t in num_tokens])} |")
+    print(f"| {' | '.join(['Throughput'] + [str(round(t, 3)) for t in throughputs])} |")
+    print(f"| {' | '.join(['Latency'] + [str(round(l, 3)) for l in latencies])} |")
 
     return clients, throughputs, latencies, prof_args
 
@@ -58,7 +69,7 @@ def output_charts(model, tp_size, bs, replicas, prompt, gen, out_dir):
         _, throughputs, latencies, prof_args = extract_values(file_pattern)
 
         kwargs = {}
-        kwargs["label"] = str(data_dir)
+        kwargs["label"] = f"A100, 1 Image, vLLM, TP = {tp_size}"
         kwargs["marker"] = "o"
         kwargs["linestyle"] = "--"
 
@@ -151,7 +162,8 @@ def output_charts(model, tp_size, bs, replicas, prompt, gen, out_dir):
     else:
         model_label = model
 
-    plt.title(f"Model: {model_label}, Prompt: {prompt}, Generation: {gen}, TP: {tp_size}")
+    prompt = 757
+    plt.title(f"Model: {model_label}, Prompt: {prompt}, Generation: {gen}")
     plt.xlabel("Throughput (queries/s)", fontsize=14)
     plt.ylabel("Latency (s)", fontsize=14)
     plt.legend()

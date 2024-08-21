@@ -39,6 +39,7 @@ class ProfilingSummary:
     token_gen_latency: float
     first_token_latency: float
     tokens_per_sec: float
+    average_tokens: float
 
 
 def parse_args():
@@ -52,7 +53,7 @@ def parse_args():
 def get_tokenizer():
     global tokenizer
     if tokenizer is None:
-        tokenizer = AutoTokenizer.from_pretrained("microsoft/Phi-3-vision-128k-instruct")
+        tokenizer = AutoTokenizer.from_pretrained("microsoft/Phi-3.5-vision-instruct")
     return tokenizer
 
 
@@ -75,6 +76,17 @@ def get_summary(args, response_details):
     # Calculate latency and throughput using P95 latency
     latency = mean([r.end_time - r.start_time for r in response_details])
     throughput = num_clients / latency
+
+    # generated_tokens = [
+    #     len(get_tokenizer().tokenize(r.generated_tokens)) for r in response_details
+    # ]
+    # print("Generated tokens:", generated_tokens)
+
+    avg_tokens = mean(
+        [
+            len(get_tokenizer().tokenize(r.generated_tokens)) for r in response_details
+        ]
+    )
 
     tokens_per_sec = mean(
         [
@@ -102,7 +114,7 @@ def get_summary(args, response_details):
         token_gen_latency = mean([t for t in token_gen_latency_flat])
 
     return ProfilingSummary(
-        throughput, latency, token_gen_latency, first_token_latency, tokens_per_sec
+        throughput, latency, token_gen_latency, first_token_latency, tokens_per_sec, avg_tokens
     )
 
 
