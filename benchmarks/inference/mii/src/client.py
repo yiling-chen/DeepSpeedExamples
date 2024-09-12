@@ -20,7 +20,9 @@ from typing import List, Iterable, Union
 
 import numpy as np
 from transformers import AutoTokenizer
-from openai import OpenAI
+from openai import OpenAI, AzureOpenAI
+from azure.identity import DefaultAzureCredential
+from azure.identity import get_bearer_token_provider
 
 try:
     from .postprocess_results import ResponseDetails
@@ -216,6 +218,76 @@ def call_aml(
     )
 
 
+def call_azure_openai(
+    input_tokens: str,
+    max_new_tokens: int,
+    args: argparse.Namespace,
+    start_time: Union[None, float] = None,
+) -> ResponseDetails:
+    if args.stream:
+        raise NotImplementedError("Not implemented for streaming")
+
+    credential = DefaultAzureCredential()
+    token_provider= get_bearer_token_provider(credential, "https://cognitiveservices.azure.com/.default")
+
+    print(args.aml_api_url)
+    print(args.deployment_name)
+
+    client = AzureOpenAI(
+        azure_ad_token_provider=token_provider,
+        azure_endpoint=args.aml_api_url,
+        api_version="2024-04-01-preview",
+        azure_deployment=args.deployment_name,
+        max_retries=0
+    )
+    models = client.models.list()
+    model = models.data[0].id
+
+    image = Image.open(args.input_image).convert("RGB")
+    img_bytes = io.BytesIO()
+    image.save(img_bytes, format="JPEG")
+    img_str = base64.b64encode(img_bytes.getvalue()).decode("utf-8")
+
+    token_gen_time = []
+    if start_time is None:
+        start_time = time.time()
+    while True:
+        try:
+            chat_response = client.chat.completions.create(
+                model=model,
+                temperature=0.0,
+                max_tokens=max_new_tokens,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/jpeg;base64,{img_str}"}
+                            },
+                            {"type": "text", "text": input_tokens}
+                        ],
+                    }
+                ],
+            )
+            output = chat_response.choices[0].message.content
+            break
+        except Exception as e:
+            print(f"Connection failed with {e}. Retrying OpenAI request")
+            # make sure response exist before we call it
+            # if response:
+            #     print(f"{response.status_code}:{response.content}")
+
+    return ResponseDetails(
+        generated_tokens=output,
+        prompt=input_tokens,
+        start_time=start_time,
+        end_time=time.time(),
+        model_time=0,
+        token_gen_time=token_gen_time,
+    )
+
+
 def call_openai(
     input_tokens: str,
     max_new_tokens: int,
@@ -225,8 +297,8 @@ def call_openai(
     if args.stream:
         raise NotImplementedError("Not implemented for streaming")
 
-    # openai_api_key = "EMPTY"
-    openai_api_key = args.aml_api_key
+    openai_api_key = "EMPTY"
+    # openai_api_key = args.aml_api_key
     openai_api_base = args.aml_api_url
 
     client = OpenAI(
@@ -293,7 +365,7 @@ def _run_parallel(
     event_loop = asyncio.new_event_loop()
     asyncio.set_event_loop(event_loop)
 
-    backend_call_fns = {"fastgen": call_fastgen, "vllm": call_vllm, "aml": call_aml, "openai": call_openai}
+    backend_call_fns = {"fastgen": call_fastgen, "vllm": call_vllm, "aml": call_aml, "openai": call_azure_openai}
     call_fn = backend_call_fns[args.backend]
 
     barrier.wait()
